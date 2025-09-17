@@ -1,73 +1,54 @@
-#imports
-import os
+# main.py
+
 import streamlit as st
+import pickle
+import os
 from langchain_groq import ChatGroq
 from langchain.chains import RetrievalQAWithSourcesChain
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.document_loaders import UnstructuredURLLoader
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
 from dotenv import load_dotenv
 
-# --- API Key Setup ---
-load_dotenv()
-groq_api_key = os.getenv("GROQ_API_KEY")
-if not groq_api_key:
-    st.error("Groq API Key not found. Please add GROQ_API_KEY to your .env file.")
-    st.stop()
+# This function is cached to load the model and vector store only once
+@st.cache_resource
+def load_assets():
+    # Load the vector store
+    with open('vectorstore.pkl', 'rb') as f:
+        vectorstore = pickle.load(f)
+    
+    # Get the API key securely
+    # It will try to get it from Streamlit Secrets first, then from .env for local dev
+    try:
+        api_key = st.secrets["GROQ_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        load_dotenv()
+        api_key = os.getenv("GROQ_API_KEY")
 
-# --- Streamlit UI ---
-st.title('📰 News Research Analyst')
-st.sidebar.title('News Article URLs')
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not found. Please set it in Streamlit Secrets or your .env file.")
 
-urls = []
-for i in range(3):
-    url = st.sidebar.text_input(f'Enter News Article URL {i+1}', key=f'url_{i}')
-    urls.append(url)
-
-urls = [u.strip() for u in urls if u.strip()]  # filter out empty ones
-
-processed_url_clicked = st.sidebar.button('Process URLs')
-main_placeholder = st.empty()
-
-# --- LLM Setup ---
-llm = ChatGroq(model='llama-3.1-8b-instant', temperature=0.4)
-
-# --- Process URLs ---
-if processed_url_clicked:
-    if not urls:
-        st.error("⚠️ Please enter at least one valid URL.")
-        st.stop()
-
-    loader = UnstructuredURLLoader(urls=urls)
-    data = loader.load()
-
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
+    llm = ChatGroq(
+        model='llama-3.1-8b-instant', 
+        temperature=0.4, 
+        groq_api_key=api_key
     )
-    texts = text_splitter.split_documents(data)
+    
+    chain = RetrievalQAWithSourcesChain.from_chain_type(llm=llm, retriever=vectorstore.as_retriever())
+    return chain
 
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vectorstore = FAISS.from_documents(texts, embeddings)
+# --- Streamlit App UI ---
+st.title('News Research Analyst 📈')
+st.info("Ask a question about the pre-loaded news articles.")
 
-    st.session_state.vectorstore = vectorstore
-    st.success("✅ URLs processed and knowledge base created!")
+try:
+    chain = load_assets()
+    query = st.text_input('Enter your question:')
 
-# --- Ask Questions ---
-query = main_placeholder.text_input('Ask a question about the news articles:')
+    if query:
+        with st.spinner("Searching for answers..."):
+            response = chain({'question': query}, return_only_outputs=True)
+            st.header('Answer')
+            st.write(response['answer'])
+            st.subheader('Sources')
+            st.write(response.get('sources', 'No sources found.'))
 
-if query:
-    if "vectorstore" not in st.session_state:
-        st.warning("⚠️ Please process URLs first.")
-    else:
-        retriever = st.session_state.vectorstore.as_retriever()
-        chain = RetrievalQAWithSourcesChain.from_chain_type(llm=llm, retriever=retriever)
-
-        response = chain({"question": query}, return_only_outputs=True)
-
-        st.header('Answer')
-        st.write(response["answer"])
-
-        st.subheader("Sources")
-        st.write(response.get("sources", "No sources found"))
+except Exception as e:
+    st.error(f"An error occurred: {e}")
