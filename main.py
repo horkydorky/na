@@ -19,6 +19,10 @@ from langchain.vectorstores import FAISS
 from dotenv import load_dotenv
 
 load_dotenv()
+groq_api_key = os.getenv("GROQ_API_KEY")
+if not groq_api_key:
+    st.error("Groq API Key not found. Please add GROQ_API_KEY to your .env file.")
+    st.stop()
 
 #Streamlit UI
 
